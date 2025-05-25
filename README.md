@@ -1,7 +1,7 @@
 # HCA - Highly Compressed Archive Utility  
 Not exact, change PATH and other stuff.  
   
-Version: 0.6.0  
+Version: 1.6.0 BETA  
 
 ---  
   
