@@ -44,18 +44,21 @@ python hca.py [options]
   
 ### Options  
   
-| Option                      | Description                                              |  
-| --------------------------- | -------------------------------------------------------- |  
-| `--compress FOLDER`         | Compress specified folder into `.hca` archive            |  
-| `--extract ARCHIVE`         | Extract `.hca` archive into a folder                     |  
-| `--list ARCHIVE`            | List contents and metadata of the archive                |  
-| `--output PATH`, `-o`       | Set output file/folder name (default: `output.hca`)      |  
-| `--password`                | Use password-based AES-256 encryption/decryption         |  
-| `--delete`                  | Delete input files after compression (asks twice)        |  
-| `--split`                   | Split archive into 50MB parts (`.part1`, `.part2`, etc.) |  
-| `--version`                 | Show program version                                     |  
-| `--help`, `--man`, `--tldr` | Show help/manual/summary info                            |  
+| Flag                          | Description                                                                                          |        
+| ----------------------------- | ---------------------------------------------------------------------------------------------------- |            
+| `--compress`                  | Compress the given folder/files                                                                      |               
+| `--extract`                   | Extract the given archive                                                                            |           
+| `--list`                      | List contents and metadata of an archive                                                             |              
+| `--output` (`-o`)             | Specify the output file or folder                                                                    |             
+| `--password`                  | Enable AES-256 encryption/decryption with a password prompt                                          |               
+| `--delete`                    | Delete input files after successful compression (asks twice for confirmation)                        |               
+| `--split`                     | Split archive into multiple parts (\~50MB each)                                                      |             
+| `--ultra`                     | Use ultra compression mode (higher compression, slower)                                              |              
+| `--ultra-plus`                | Use ultra-plus compression mode (maximum compression, slowest, best ratio, compress compressed data) |  
+| `--version`                   | Show the version of the program                                                                      |  
+| `--help` / `--man` / `--tldr` | Show help, manual, or summary information                                                            |  
   
+    
 ---    
   
 ## Examples  
