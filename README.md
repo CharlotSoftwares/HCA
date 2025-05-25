@@ -1,7 +1,8 @@
 # HCA - Highly Compressed Archive Utility  
+Not exact, change PATH and other stuff.  
   
 Version: 0.6.0  
-  
+
 ---  
   
 ## Overview  
@@ -122,7 +123,9 @@ pip install pyinstaller
 pyinstaller --onefile hca.py  
 ```  
   
-3. The executable will be in the `dist` folder as `hca.exe`.  
+3. The executable will be in the `dist` folder as `hca.exe`.
+
+* Consider adding the file to PATH.  
   
 ---  
   
