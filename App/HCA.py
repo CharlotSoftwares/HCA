@@ -1,316 +1,126 @@
-import argparse
-import json
+# Test: Compressed ≈ 609 kb to ≈ 5 kb (0.9 % of original size!) with the command "C:\> .\HCA.py --compress C:\Users\Charlot\Downloads\Test" (HCA.py was added to environment variables and was in C:\)
 import os
-import re
-import struct
 import sys
-import hashlib
+import argparse
 import getpass
-from datetime import datetime
-from threading import Thread, Lock
-from queue import Queue
-from Crypto.Cipher import AES
-from Crypto.Random import get_random_bytes
+import shutil
+import lzma
+import json
+import hashlib
+import tempfile
 
-# --- Constants ---
-VERSION = "HCA v0.6.0"
-MAGIC_HEADER = b"HCA1"
-AES_BLOCK_SIZE = 16
-ERROR_CODES = {
-    "SUCCESS": 0,
-    "GENERAL_ERROR": 1,
-    "INVALID_PATH": 2,
-    "OUTPUT_ERROR": 3,
-    "INVALID_ARGS": 4,
-    "COMPRESSION_FAILED": 5,
-    "EXTRACTION_FAILED": 6,
-}
-SAFE_FILENAME_REGEX = re.compile(r'^[\w\-. ]+$')
+try:
+    import zstandard as zstd
+except ImportError:
+    zstd = None
 
-# --- Utility functions ---
+VERSION = "HCA v0.1 smart"
+ERROR_CODES = {"INVALID_ARGS": 1, "FILE_ERROR": 2, "EXTRACTION_ERROR": 3}
 
-def safe_input(prompt, valid_answers):
-    while True:
-        ans = input(prompt).strip().lower()
-        if ans in valid_answers:
-            return ans
-        print(f"Please answer {', '.join(valid_answers)}.")
+def validate_filename(filename):
+    if not filename.endswith(".hca"):
+        raise ValueError("Output filename must end with .hca")
 
-def validate_filename(name):
-    if not SAFE_FILENAME_REGEX.match(name):
-        print(f"Error: Invalid filename '{name}'. Use only letters, numbers, -, _, . and spaces.")
-        sys.exit(ERROR_CODES["INVALID_ARGS"])
+def get_all_files(folder):
+    for root, dirs, files in os.walk(folder):
+        for file in files:
+            full_path = os.path.join(root, file)
+            rel_path = os.path.relpath(full_path, folder)
+            yield full_path, rel_path
 
-def pad(data):
-    padding_len = AES_BLOCK_SIZE - (len(data) % AES_BLOCK_SIZE)
-    return data + bytes([padding_len]) * padding_len
+def hash_file(path):
+    hasher = hashlib.sha256()
+    with open(path, 'rb') as f:
+        while chunk := f.read(8192):
+            hasher.update(chunk)
+    return hasher.hexdigest()
 
-def unpad(data):
-    padding_len = data[-1]
-    if padding_len < 1 or padding_len > AES_BLOCK_SIZE:
-        raise ValueError("Invalid padding")
-    if data[-padding_len:] != bytes([padding_len]) * padding_len:
-        raise ValueError("Invalid padding bytes")
-    return data[:-padding_len]
+def compress_folder(input_folder, output_file, password=None, delete_input=False, split=False):
+    print(f"[+] Compressing '{input_folder}' -> '{output_file}'")
 
-def encrypt_data(data, key):
-    iv = get_random_bytes(AES_BLOCK_SIZE)
-    cipher = AES.new(key, AES.MODE_CBC, iv)
-    encrypted = cipher.encrypt(pad(data))
-    return iv + encrypted
+    file_list = []
+    file_hashes = {}
+    tmpdir = tempfile.mkdtemp()
 
-def decrypt_data(data, key):
-    iv = data[:AES_BLOCK_SIZE]
-    cipher = AES.new(key, AES.MODE_CBC, iv)
-    decrypted = cipher.decrypt(data[AES_BLOCK_SIZE:])
-    return unpad(decrypted)
+    # Step 1: Deduplicate and collect files
+    for full_path, rel_path in get_all_files(input_folder):
+        h = hash_file(full_path)
+        if h in file_hashes:
+            print(f"[~] Skipping duplicate: {rel_path}")
+            continue
+        file_hashes[h] = rel_path
+        tmp_path = os.path.join(tmpdir, rel_path)
+        os.makedirs(os.path.dirname(tmp_path), exist_ok=True)
+        shutil.copy2(full_path, tmp_path)
+        file_list.append((rel_path, h))
 
-def write_metadata(archive, metadata):
-    metadata_bytes = json.dumps(metadata).encode('utf-8')
-    archive.write(MAGIC_HEADER)
-    archive.write(struct.pack("<I", len(metadata_bytes)))
-    archive.write(metadata_bytes)
+    # Step 2: Tar all into one binary blob
+    tar_path = os.path.join(tmpdir, "bundle.tar")
+    shutil.make_archive(tar_path[:-4], "tar", tmpdir)
 
-def read_metadata(archive):
-    magic = archive.read(4)
-    if magic != MAGIC_HEADER:
-        print("Invalid archive format or corrupted file.")
-        sys.exit(ERROR_CODES["INVALID_ARGS"])
-    size_bytes = archive.read(4)
-    if len(size_bytes) < 4:
-        print("Invalid archive format or corrupted file (metadata size).")
-        sys.exit(ERROR_CODES["INVALID_ARGS"])
-    size = struct.unpack("<I", size_bytes)[0]
-    metadata_bytes = archive.read(size)
-    if len(metadata_bytes) < size:
-        print("Invalid archive format or corrupted file (metadata content).")
-        sys.exit(ERROR_CODES["INVALID_ARGS"])
-    metadata = json.loads(metadata_bytes.decode('utf-8'))
-    return metadata
+    # Step 3: Compress using LZMA or Zstd
+    data = open(tar_path, "rb").read()
+    print(f"[~] Uncompressed bundle size: {len(data)/1024:.2f} KB")
 
-def list_archive(path):
+    if zstd:
+        cctx = zstd.ZstdCompressor(level=22)
+        compressed = cctx.compress(data)
+    else:
+        compressed = lzma.compress(data, preset=9)
+
+    with open(output_file, "wb") as f:
+        f.write(compressed)
+
+    print(f"[✓] Compressed to {len(compressed)/1024:.2f} KB ({(len(compressed)/len(data))*100:.1f}% of original)")
+
+    if delete_input:
+        shutil.rmtree(input_folder)
+        print(f"[!] Deleted original folder: {input_folder}")
+
+    shutil.rmtree(tmpdir)
+
+def extract_archive(archive_file, output_folder, password=None):
+    print(f"[+] Extracting '{archive_file}' -> '{output_folder}'")
+
+    data = open(archive_file, "rb").read()
     try:
-        with open(path, "rb") as archive:
-            metadata = read_metadata(archive)
-            print("Archive Metadata:")
-            for k, v in metadata.items():
-                print(f"  {k}: {v}")
-            print("\nContents:")
-            while True:
-                len_bytes = archive.read(4)
-                if not len_bytes or len(len_bytes) < 4:
-                    break
-                path_len = struct.unpack('<I', len_bytes)[0]
-                rel_path_bytes = archive.read(path_len)
-                if len(rel_path_bytes) < path_len:
-                    break
-                rel_path = rel_path_bytes.decode('utf-8')
-                file_size_bytes = archive.read(8)
-                if len(file_size_bytes) < 8:
-                    break
-                file_size = struct.unpack('<Q', file_size_bytes)[0]
-                file_hash = archive.read(32)
-                if len(file_hash) < 32:
-                    break
-                print(f"  {rel_path} ({file_size} bytes)")
-                archive.seek(file_size, os.SEEK_CUR)
-    except Exception as e:
-        print("Error listing archive:", e)
-        sys.exit(ERROR_CODES["GENERAL_ERROR"])
-
-def compress_worker(queue, archive_lock, archive, input_folder, key=None):
-    while True:
-        file_path = queue.get()
-        if file_path is None:
-            queue.task_done()
-            break
-        rel_path = os.path.relpath(file_path, input_folder)
-        try:
-            with open(file_path, "rb") as f:
-                data = f.read()
-            if key:
-                data = encrypt_data(data, key)
-            file_hash = hashlib.sha256(data).digest()
-
-            with archive_lock:
-                archive.write(struct.pack("<I", len(rel_path.encode('utf-8'))))
-                archive.write(rel_path.encode('utf-8'))
-                archive.write(struct.pack("<Q", len(data)))
-                archive.write(file_hash)
-                archive.write(data)
-
-            print(f"Compressed: {rel_path}")
-        except Exception as e:
-            print(f"Failed compressing {rel_path}: {e}")
-        finally:
-            queue.task_done()
-
-def compress_folder(input_folder, output_file, password=None, delete_after=False, split=False):
-    if not os.path.isdir(input_folder):
-        print(f"Error: Input folder '{input_folder}' does not exist.")
-        sys.exit(ERROR_CODES["INVALID_PATH"])
-
-    files = []
-    for root, _, fs in os.walk(input_folder):
-        for f in fs:
-            files.append(os.path.join(root, f))
-
-    key = None
-    if password:
-        key = hashlib.sha256(password.encode('utf-8')).digest()
-
-    try:
-        archive_lock = Lock()
-        queue = Queue()
-        num_threads = min(4, len(files)) if files else 1
-
-        if split:
-            # Implementing split files would require more complex handling,
-            # for now raise NotImplementedError or simply warn
-            print("Split archive feature is not implemented yet.")
-            sys.exit(ERROR_CODES["INVALID_ARGS"])
+        if zstd:
+            dctx = zstd.ZstdDecompressor()
+            raw = dctx.decompress(data)
         else:
-            archive = open(output_file, "wb")
-
-        metadata = {
-            "created": datetime.now().isoformat(),
-            "user": os.getenv("USERNAME") or os.getenv("USER") or "unknown",
-            "file_count": len(files),
-            "split": split,
-            "version": VERSION
-        }
-        write_metadata(archive, metadata)
-
-        # Start worker threads
-        threads = []
-        for _ in range(num_threads):
-            t = Thread(target=compress_worker, args=(queue, archive_lock, archive, input_folder, key))
-            t.daemon = True
-            t.start()
-            threads.append(t)
-
-        for file_path in files:
-            queue.put(file_path)
-
-        queue.join()
-
-        # Stop workers
-        for _ in range(num_threads):
-            queue.put(None)
-        for t in threads:
-            t.join()
-
-        archive.close()
-        print("Compression completed.")
-
+            raw = lzma.decompress(data)
     except Exception as e:
-        print("Compression failed:", e)
-        sys.exit(ERROR_CODES["COMPRESSION_FAILED"])
+        print("[x] Failed to decompress:", e)
+        sys.exit(ERROR_CODES["EXTRACTION_ERROR"])
 
-    if delete_after:
-        print("\nDeletion confirmation process starting:")
-        for file_path in files:
-            for _ in range(2):
-                ans = safe_input(f"Do you want to delete '{file_path}'? (y/n): ", ["y", "n"])
-                if ans == "n":
-                    print(f"Skipped deleting '{file_path}'.")
-                    break
-            else:
-                try:
-                    os.remove(file_path)
-                    print(f"Deleted '{file_path}'.")
-                except Exception as e:
-                    print(f"Failed to delete '{file_path}': {e}")
+    tmp_tar = os.path.join(tempfile.gettempdir(), "tmp_bundle.tar")
+    with open(tmp_tar, "wb") as f:
+        f.write(raw)
 
-def extract_archive(path, output_folder, password=None):
-    if not os.path.isfile(path):
-        print(f"Error: Archive '{path}' does not exist.")
-        sys.exit(ERROR_CODES["INVALID_PATH"])
+    shutil.unpack_archive(tmp_tar, output_folder)
+    print("[✓] Extraction complete.")
 
-    key = None
-    if password:
-        key = hashlib.sha256(password.encode('utf-8')).digest()
-
-    try:
-        with open(path, "rb") as archive:
-            metadata = read_metadata(archive)
-            print(f"Extracting archive created by {metadata.get('user')} on {metadata.get('created')}")
-            while True:
-                len_bytes = archive.read(4)
-                if not len_bytes or len(len_bytes) < 4:
-                    break
-                path_len = struct.unpack('<I', len_bytes)[0]
-                rel_path_bytes = archive.read(path_len)
-                if len(rel_path_bytes) < path_len:
-                    print("Archive corrupted or incomplete.")
-                    sys.exit(ERROR_CODES["EXTRACTION_FAILED"])
-                rel_path = rel_path_bytes.decode('utf-8')
-                file_size_bytes = archive.read(8)
-                if len(file_size_bytes) < 8:
-                    print("Archive corrupted or incomplete.")
-                    sys.exit(ERROR_CODES["EXTRACTION_FAILED"])
-                file_size = struct.unpack('<Q', file_size_bytes)[0]
-                file_hash = archive.read(32)
-                if len(file_hash) < 32:
-                    print("Archive corrupted or incomplete.")
-                    sys.exit(ERROR_CODES["EXTRACTION_FAILED"])
-
-                output_path = os.path.join(output_folder, rel_path)
-                os.makedirs(os.path.dirname(output_path), exist_ok=True)
-
-                data = archive.read(file_size)
-                if len(data) < file_size:
-                    print("Archive corrupted or incomplete.")
-                    sys.exit(ERROR_CODES["EXTRACTION_FAILED"])
-
-                if key:
-                    data = decrypt_data(data, key)
-
-                actual_hash = hashlib.sha256(data).digest()
-                if actual_hash != file_hash:
-                    print(f"Warning: hash mismatch for {rel_path}")
-
-                with open(output_path, 'wb') as out_file:
-                    out_file.write(data)
-
-                print(f"Extracted: {rel_path}")
-
-        print("Extraction completed.")
-
-    except Exception as e:
-        print("Extraction failed:", e)
-        sys.exit(ERROR_CODES["EXTRACTION_FAILED"])
+def list_archive(archive_file):
+    print(f"[~] Listing contents of '{archive_file}' (Compressed: {os.path.getsize(archive_file)/1024:.2f} KB)")
+    print("No real file list stored in this format (yet). Just decompress to see contents.")
 
 def print_man():
-    man_text = """
+    print("""
 HCA Archiver Manual
-
-Usage:
-  --compress FOLDER      Compress folder into HCA archive
-  --extract ARCHIVE      Extract archive into folder
-  --list ARCHIVE         List contents of archive
-  --output PATH          Set output file/folder name (default: output.hca)
-  --password             Prompt for password (encrypt/decrypt)
-  --delete               Delete input files after successful compression with confirmation
-  --split                Split archive into 50MB parts (adds .partN suffix) [Not implemented]
-  --version              Show version info
-  --help, --man, --tldr Show this manual / help / short info
-
-Examples:
-  hca.py --compress myfolder -o archive.hca --password --split --delete
-  hca.py --extract archive.hca -o outfolder --password
-  hca.py --list archive.hca
-"""
-    print(man_text)
+--------------------
+--compress [FOLDER]     Compress the specified folder
+--extract [ARCHIVE]     Extract the given .hca archive
+--list [ARCHIVE]        Show basic info about the archive
+--output, -o [PATH]     Set output path
+--password              Prompt for password (currently unused)
+--delete                Delete input files after compression
+--version               Show version
+--man                   Show full manual
+--tldr                  Show summary
+""")
 
 def print_tldr():
-    print("HCA - Highly Compressed Archive")
-    print("Usage: hca.py --compress/--extract/--list [options]")
-    print("Use --help or --man for detailed info.")
-
-def print_help():
-    print("Use --man to see the full manual.")
-    print("Use --tldr for a short summary.")
+    print("TL;DR: Use --compress FOLDER or --extract ARCHIVE. Add -o for output path.")
 
 def main():
     parser = argparse.ArgumentParser(description="HCA Archiver")
@@ -324,7 +134,6 @@ def main():
     parser.add_argument("--version", action="store_true", help="Show version")
     parser.add_argument("--man", action="store_true", help="Show manual")
     parser.add_argument("--tldr", action="store_true", help="Show summary")
-
 
     args = parser.parse_args()
 
