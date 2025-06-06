@@ -8,6 +8,7 @@ python3 --version
 ```  
   
 If it’s missing or too old, install Python 3 (usually):  
+*(Debian-based example)*  
   
 ```bash  
 sudo apt update  
