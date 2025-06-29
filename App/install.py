@@ -10,7 +10,6 @@ IS_WINDOWS = platform.system() == "Windows"
 INSTALL_DIR = os.path.join(os.environ.get("ProgramFiles", "C:\\Program Files"), APP_NAME) if IS_WINDOWS else "/opt/HCA"
 WRAPPER = "hca.bat" if IS_WINDOWS else "hca"
 
-# Locate script directory and files
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ENTRY_FILE = os.path.join(SCRIPT_DIR, "HCA.py")
 REQUIREMENTS_FILE = os.path.join(SCRIPT_DIR, "requirements.txt")
