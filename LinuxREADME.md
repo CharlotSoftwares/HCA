@@ -2,7 +2,6 @@
   
 (1.7.0 BETA)  
   
-````markdown
 # HCA for Linux  
   
 A fast and intelligent folder archiver using LZMA or Zstandard, with deduplication and optional password support.  
