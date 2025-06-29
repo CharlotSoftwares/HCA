@@ -6,11 +6,14 @@ import platform
 import stat
 
 APP_NAME = "HCA"
-ENTRY_FILE = "HCA.py"
-REQUIREMENTS_FILE = "requirements.txt"
 IS_WINDOWS = platform.system() == "Windows"
 INSTALL_DIR = os.path.join(os.environ.get("ProgramFiles", "C:\\Program Files"), APP_NAME) if IS_WINDOWS else "/opt/HCA"
 WRAPPER = "hca.bat" if IS_WINDOWS else "hca"
+
+# Locate script directory and files
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+ENTRY_FILE = os.path.join(SCRIPT_DIR, "HCA.py")
+REQUIREMENTS_FILE = os.path.join(SCRIPT_DIR, "requirements.txt")
 
 def install_dependencies():
     if os.path.exists(REQUIREMENTS_FILE):
@@ -23,7 +26,7 @@ def copy_script():
     os.makedirs(INSTALL_DIR, exist_ok=True)
     shutil.copy2(ENTRY_FILE, os.path.join(INSTALL_DIR, "HCA.py"))
     if os.path.exists(REQUIREMENTS_FILE):
-        shutil.copy2(REQUIREMENTS_FILE, os.path.join(INSTALL_DIR, REQUIREMENTS_FILE))
+        shutil.copy2(REQUIREMENTS_FILE, os.path.join(INSTALL_DIR, "requirements.txt"))
     print(f"[+] Installed HCA.py to {INSTALL_DIR}")
 
 def add_to_path_windows():
@@ -37,9 +40,13 @@ def add_to_path_windows():
             new_path = path_val + ";" + INSTALL_DIR
             winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, new_path)
             print("[+] Added install path to system PATH.")
+        else:
+            print("[*] Install path already in PATH.")
         winreg.CloseKey(key)
     except PermissionError:
-        print("[!] Run this installer as administrator to update system PATH.")
+        print("[!] Run this script as Administrator to add to system PATH.")
+    except Exception as e:
+        print("[!] Failed to modify PATH:", e)
 
 def add_to_path_linux():
     bashrc = os.path.expanduser("~/.bashrc")
@@ -62,6 +69,10 @@ def create_wrapper():
 
 def main():
     print(f"[*] Installing {APP_NAME}...")
+    if not os.path.isfile(ENTRY_FILE):
+        print(f"[x] ERROR: HCA.py not found in {SCRIPT_DIR}")
+        sys.exit(1)
+
     install_dependencies()
     copy_script()
     create_wrapper()
@@ -71,7 +82,8 @@ def main():
     else:
         add_to_path_linux()
 
-    print(f"[✓] Done. You can now use '{WRAPPER}' from the terminal.")
+    print(f"\n[✓] Installation complete.")
+    print(f"    You can now run HCA with: {WRAPPER.replace('.bat', '')}\n")
 
 if __name__ == "__main__":
     main()
