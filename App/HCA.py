@@ -1,4 +1,3 @@
-# We should really make an installer for this one...
 # Test: Compressed ≈ 609 kb to ≈ 5 kb (0.9 % of original size!) with the command "C:\> .\HCA.py --compress C:\Users\Charlot\Downloads\Test" (HCA.py was added to environment variables and was in C:\)
 import os
 import sys
