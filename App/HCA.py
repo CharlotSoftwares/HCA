@@ -1,11 +1,9 @@
-# Test: Compressed ≈ 609 kb to ≈ 5 kb (0.9 % of original size!) with the command "C:\> .\HCA.py --compress C:\Users\Charlot\Downloads\Test" (HCA.py was added to environment variables and was in C:\)
 import os
 import sys
 import argparse
 import getpass
 import shutil
 import lzma
-import json
 import hashlib
 import tempfile
 
@@ -14,8 +12,21 @@ try:
 except ImportError:
     zstd = None
 
-VERSION = "HCA v0.1 smart"
+try:
+    from Crypto.Cipher import AES
+    from Crypto.Protocol.KDF import PBKDF2
+    from Crypto.Random import get_random_bytes
+except ImportError:
+    print("[x] pycryptodome is required for encryption. Install it with: pip install pycryptodome")
+    sys.exit(1)
+
+VERSION = "HCA v0.1 smart with encryption"
 ERROR_CODES = {"INVALID_ARGS": 1, "FILE_ERROR": 2, "EXTRACTION_ERROR": 3}
+
+MAGIC = b"HCAENC"  # Magic header for encrypted files
+SALT_SIZE = 16
+NONCE_SIZE = 12
+KEY_SIZE = 32  # AES-256
 
 def validate_filename(filename):
     if not filename.endswith(".hca"):
@@ -35,14 +46,54 @@ def hash_file(path):
             hasher.update(chunk)
     return hasher.hexdigest()
 
+def derive_key(password: str, salt: bytes) -> bytes:
+    return PBKDF2(password.encode('utf-8'), salt, dkLen=KEY_SIZE, count=100_000)
+
+def encrypt_data(data: bytes, password: str) -> bytes:
+    salt = get_random_bytes(SALT_SIZE)
+    key = derive_key(password, salt)
+    nonce = get_random_bytes(NONCE_SIZE)
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    ciphertext, tag = cipher.encrypt_and_digest(data)
+    return MAGIC + salt + nonce + tag + ciphertext
+
+def decrypt_data(data: bytes, password: str) -> bytes:
+    if not data.startswith(MAGIC):
+        raise ValueError("Not an encrypted archive")
+    offset = len(MAGIC)
+    salt = data[offset:offset+SALT_SIZE]
+    offset += SALT_SIZE
+    nonce = data[offset:offset+NONCE_SIZE]
+    offset += NONCE_SIZE
+    tag = data[offset:offset+16]  # GCM tag size fixed at 16 bytes
+    offset += 16
+    ciphertext = data[offset:]
+    key = derive_key(password, salt)
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    return cipher.decrypt_and_verify(ciphertext, tag)
+
+def get_password(confirm=False):
+    try:
+        pwd = getpass.getpass("Enter password: ")
+        if confirm:
+            pwd2 = getpass.getpass("Confirm password: ")
+            if pwd != pwd2:
+                print("[x] Passwords do not match.")
+                sys.exit(ERROR_CODES["INVALID_ARGS"])
+        if not pwd:
+            print("[x] Password cannot be empty.")
+            sys.exit(ERROR_CODES["INVALID_ARGS"])
+        return pwd
+    except KeyboardInterrupt:
+        print("\n[x] Interrupted during password input.")
+        sys.exit(ERROR_CODES["INVALID_ARGS"])
+
 def compress_folder(input_folder, output_file, password=None, delete_input=False, split=False):
     print(f"[+] Compressing folder '{input_folder}' -> '{output_file}'")
 
-    file_list = []
     file_hashes = {}
     tmpdir = tempfile.mkdtemp()
 
-    # Step 1: Deduplicate and copy files to temp dir
     for full_path, rel_path in get_all_files(input_folder):
         h = hash_file(full_path)
         if h in file_hashes:
@@ -52,13 +103,10 @@ def compress_folder(input_folder, output_file, password=None, delete_input=False
         tmp_path = os.path.join(tmpdir, rel_path)
         os.makedirs(os.path.dirname(tmp_path), exist_ok=True)
         shutil.copy2(full_path, tmp_path)
-        file_list.append((rel_path, h))
 
-    # Step 2: Tar all into one binary blob
     tar_path = os.path.join(tmpdir, "bundle.tar")
     shutil.make_archive(tar_path[:-4], "tar", tmpdir)
 
-    # Step 3: Compress using LZMA or Zstd
     data = open(tar_path, "rb").read()
     print(f"[~] Uncompressed bundle size: {len(data)/1024:.2f} KB")
 
@@ -68,10 +116,17 @@ def compress_folder(input_folder, output_file, password=None, delete_input=False
     else:
         compressed = lzma.compress(data, preset=9)
 
-    with open(output_file, "wb") as f:
-        f.write(compressed)
+    if password:
+        encrypted = encrypt_data(compressed, password)
+        with open(output_file, "wb") as f:
+            f.write(encrypted)
+        size_out = len(encrypted)
+    else:
+        with open(output_file, "wb") as f:
+            f.write(compressed)
+        size_out = len(compressed)
 
-    print(f"[✓] Compressed to {len(compressed)/1024:.2f} KB ({(len(compressed)/len(data))*100:.1f}% of original)")
+    print(f"[✓] Compressed to {size_out/1024:.2f} KB ({(size_out/len(data))*100:.1f}% of original)")
 
     if delete_input:
         shutil.rmtree(input_folder)
@@ -93,10 +148,17 @@ def compress_file(input_file, output_file, password=None, delete_input=False):
     else:
         compressed = lzma.compress(data, preset=9)
 
-    with open(output_file, "wb") as f:
-        f.write(compressed)
+    if password:
+        encrypted = encrypt_data(compressed, password)
+        with open(output_file, "wb") as f:
+            f.write(encrypted)
+        size_out = len(encrypted)
+    else:
+        with open(output_file, "wb") as f:
+            f.write(compressed)
+        size_out = len(compressed)
 
-    print(f"[✓] Compressed to {len(compressed)/1024:.2f} KB ({(len(compressed)/len(data))*100:.1f}% of original)")
+    print(f"[✓] Compressed to {size_out/1024:.2f} KB ({(size_out/len(data))*100:.1f}% of original)")
 
     if delete_input:
         os.remove(input_file)
@@ -107,16 +169,24 @@ def extract_archive(archive_file, output_folder, password=None):
 
     data = open(archive_file, "rb").read()
     try:
+        if password:
+            data = decrypt_data(data, password)
+        elif data.startswith(MAGIC):
+            print("[x] Archive is password protected. Use --password option.")
+            sys.exit(ERROR_CODES["EXTRACTION_ERROR"])
+
         if zstd:
             dctx = zstd.ZstdDecompressor()
             raw = dctx.decompress(data)
         else:
             raw = lzma.decompress(data)
+    except ValueError as e:
+        print("[x] Decryption failed:", e)
+        sys.exit(ERROR_CODES["EXTRACTION_ERROR"])
     except Exception as e:
         print("[x] Failed to decompress:", e)
         sys.exit(ERROR_CODES["EXTRACTION_ERROR"])
 
-    # Heuristic: if tar archive, extract, else just write file
     tmp_tar = os.path.join(tempfile.gettempdir(), "tmp_bundle.tar")
     with open(tmp_tar, "wb") as f:
         f.write(raw)
@@ -125,7 +195,6 @@ def extract_archive(archive_file, output_folder, password=None):
         shutil.unpack_archive(tmp_tar, output_folder)
         print("[✓] Extraction complete (folder).")
     except (shutil.ReadError, ValueError):
-        # If unpack fails, maybe single file compressed — write raw to output
         os.makedirs(output_folder, exist_ok=True)
         output_path = os.path.join(output_folder, os.path.basename(archive_file).replace(".hca",""))
         with open(output_path, "wb") as f:
@@ -144,7 +213,7 @@ HCA Archiver Manual
 --extract [ARCHIVE]          Extract the given .hca archive
 --list [ARCHIVE]             Show basic info about the archive
 --output, -o [PATH]          Set output file or folder
---password                  Prompt for password (currently unused)
+--password                  Prompt for password (encryption/decryption)
 --delete                    Delete input files after compression
 --version                   Show version
 --man                       Show manual
@@ -184,12 +253,10 @@ def main():
     if args.compress:
         input_path = args.compress
 
-        # Check input exists
         if not os.path.exists(input_path):
             print(f"[x] Input path does not exist: {input_path}")
             sys.exit(ERROR_CODES["FILE_ERROR"])
 
-        # Determine output file path and name
         if args.output:
             output_path = args.output
             try:
@@ -199,14 +266,12 @@ def main():
                 sys.exit(ERROR_CODES["INVALID_ARGS"])
         else:
             base_dir = os.path.dirname(os.path.abspath(input_path))
-            base_name = os.path.basename(input_path)
-            # Remove trailing slashes if any
-            base_name = base_name.rstrip(os.sep)
+            base_name = os.path.basename(input_path).rstrip(os.sep)
             output_path = os.path.join(base_dir, base_name + ".hca")
 
         password = None
         if args.password:
-            password = getpass.getpass("Enter password: ")
+            password = get_password(confirm=True)
 
         if os.path.isdir(input_path):
             compress_folder(input_path, output_path, password, args.delete, args.split)
@@ -227,7 +292,8 @@ def main():
 
         password = None
         if args.password:
-            password = getpass.getpass("Enter password: ")
+            # Prompt password interactively here for extraction
+            password = get_password(confirm=False)
 
         extract_archive(archive_file, output_folder, password)
 
