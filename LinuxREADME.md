@@ -1,6 +1,6 @@
 # HOW TO USE    
   
-(1.7.0 BETA)  
+(1.7.1 BETA)  
   
 # HCA for Linux  
   
